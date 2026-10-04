@@ -1,0 +1,15 @@
+private/
+output/
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.webp
+config.local.*
+tmp/

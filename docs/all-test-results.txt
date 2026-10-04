@@ -1,0 +1,55 @@
+test_approver_is_scoped_to_chat (test_max_bot.MaxTests.test_approver_is_scoped_to_chat) ... ok
+test_changed_attachment_cancels (test_max_bot.MaxTests.test_changed_attachment_cancels) ... ok
+test_duplicate_bytes_new_message_not_republished (test_max_bot.MaxTests.test_duplicate_bytes_new_message_not_republished) ... ok
+test_duplicate_event_and_press (test_max_bot.MaxTests.test_duplicate_event_and_press) ... ok
+test_edited_event_cancels_old_button (test_max_bot.MaxTests.test_edited_event_cancels_old_button) ... ok
+test_forwarded_button_does_not_sign (test_max_bot.MaxTests.test_forwarded_button_does_not_sign) ... ok
+test_inbox_deduplicates_and_persists (test_max_bot.MaxTests.test_inbox_deduplicates_and_persists) ... ok
+test_media_url_rejects_external_or_private (test_max_bot.MaxTests.test_media_url_rejects_external_or_private) ... ok
+test_new_user_gets_id_without_access (test_max_bot.MaxTests.test_new_user_gets_id_without_access) ... ok
+Approval notification failed for one configured approver
+test_notification_timeout_does_not_duplicate_button (test_max_bot.MaxTests.test_notification_timeout_does_not_duplicate_button) ... ok
+test_other_approver_cannot_use_forwarded_button (test_max_bot.MaxTests.test_other_approver_cannot_use_forwarded_button) ... ok
+test_other_chats_and_bot_files_ignored (test_max_bot.MaxTests.test_other_chats_and_bot_files_ignored) ... ok
+test_private_button_only_to_vitaliy (test_max_bot.MaxTests.test_private_button_only_to_vitaliy) ... ok
+test_private_id_command (test_max_bot.MaxTests.test_private_id_command) ... ok
+test_real_negative_not_published (test_max_bot.MaxTests.test_real_negative_not_published) ... ok
+test_real_pdf_workflow (test_max_bot.MaxTests.test_real_pdf_workflow) ... ok
+test_refreshed_max_token_keeps_same_file (test_max_bot.MaxTests.test_refreshed_max_token_keeps_same_file) ... ok
+test_rejected_page_not_posted_to_group (test_max_bot.MaxTests.test_rejected_page_not_posted_to_group) ... ok
+test_same_file_id_changed_bytes_cancels (test_max_bot.MaxTests.test_same_file_id_changed_bytes_cancels) ... ok
+test_skip_and_expiry (test_max_bot.MaxTests.test_skip_and_expiry) ... ok
+test_source_pdf_is_deleted_after_completion (test_max_bot.MaxTests.test_source_pdf_is_deleted_after_completion) ... ok
+test_two_approvers_first_confirmation_wins (test_max_bot.MaxTests.test_two_approvers_first_confirmation_wins) ... ok
+test_two_chats_reply_only_to_origin (test_max_bot.MaxTests.test_two_chats_reply_only_to_origin) ... ok
+test_unauthorized_press_does_not_sign (test_max_bot.MaxTests.test_unauthorized_press_does_not_sign) ... ok
+test_unknown_delivery_not_retried_even_after_restart (test_max_bot.MaxTests.test_unknown_delivery_not_retried_even_after_restart) ... ok
+test_webhook_secret (test_max_bot.MaxTests.test_webhook_secret) ... ok
+test_01_correct_identity_signed_and_visible_stream (test_signer.SignerTests.test_01_correct_identity_signed_and_visible_stream) ... ok
+test_02_wrong_inn_no_signature (test_signer.SignerTests.test_02_wrong_inn_no_signature) ... ok
+test_03_missing_inn (test_signer.SignerTests.test_03_missing_inn) ... ok
+test_04_wrong_name_with_correct_inn (test_signer.SignerTests.test_04_wrong_name_with_correct_inn) ... ok
+test_05_normalization (test_signer.SignerTests.test_05_normalization) ... ok
+test_06_missing_structure (test_signer.SignerTests.test_06_missing_structure) ... ok
+test_07_page_exception_is_logged_and_next_page_processed (test_signer.SignerTests.test_07_page_exception_is_logged_and_next_page_processed) ... ok
+test_08_source_unchanged (test_signer.SignerTests.test_08_source_unchanged) ... ok
+test_09_reference_and_repeat_do_not_double_overlay (test_signer.SignerTests.test_09_reference_and_repeat_do_not_double_overlay) ... ok
+test_10_mixed_pages_independent (test_signer.SignerTests.test_10_mixed_pages_independent) ... ok
+test_11_duplicate_inn_is_ambiguous (test_signer.SignerTests.test_11_duplicate_inn_is_ambiguous) ... ok
+test_12_existing_output_is_not_overwritten (test_signer.SignerTests.test_12_existing_output_is_not_overwritten) ... ok
+test_13_unknown_stamp_is_review (test_signer.SignerTests.test_13_unknown_stamp_is_review) ... ok
+test_14_real_four_page_negative (test_signer.SignerTests.test_14_real_four_page_negative) ... ok
+test_15_hidden_or_resized_stamp_is_review (test_signer.SignerTests.test_15_hidden_or_resized_stamp_is_review) ... ok
+test_16_rotation_is_preserved_but_not_blindly_signed (test_signer.SignerTests.test_16_rotation_is_preserved_but_not_blindly_signed) ... ok
+test_17_real_mixed_pages_preserve_existing_signature (test_signer.SignerTests.test_17_real_mixed_pages_preserve_existing_signature) ... ok
+test_18_long_table_and_rounded_a4 (test_signer.SignerTests.test_18_long_table_and_rounded_a4) ... ok
+test_19_signature_zone_must_fit_page (test_signer.SignerTests.test_19_signature_zone_must_fit_page) ... ok
+test_20_embedded_real_signature_preserved (test_signer.SignerTests.test_20_embedded_real_signature_preserved) ... ok
+test_21_unknown_embedded_signature_stays_review (test_signer.SignerTests.test_21_unknown_embedded_signature_stays_review) ... ok
+test_22_embedded_mixed_pdf_and_repeat (test_signer.SignerTests.test_22_embedded_mixed_pdf_and_repeat) ... ok
+test_23_extra_text_near_embedded_signature_rejected (test_signer.SignerTests.test_23_extra_text_near_embedded_signature_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 49 tests in 51.609s
+
+OK

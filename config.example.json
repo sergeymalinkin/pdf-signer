@@ -1,0 +1,65 @@
+{
+  "company": "ООО «Железнодорожная логистика»",
+  "inn": "4345494742",
+  "facsimile": "private/facsimile.png",
+  "identity_x": [
+    180,
+    563
+  ],
+  "identity_y": [
+    9,
+    30
+  ],
+  "label_offset": 19.8,
+  "label_x": 370.92,
+  "header_range": [
+    370,
+    590
+  ],
+  "mediabox": [
+    0,
+    0,
+    595.32,
+    841.92
+  ],
+  "rotation": 0,
+  "zone_x": [
+    360,
+    560
+  ],
+  "zone_y": [
+    -15,
+    140
+  ],
+  "stamp_x": 370,
+  "stamp_y": 15,
+  "stamp_width": 120,
+  "stamp_height": 112.56,
+  "reference_appearances": [
+    "72e6e44a228bb95263588f911412ac39ca5261f161fbe6804eeb902c162fcf3a"
+  ],
+  "reference_placement_bounds": [
+    [
+      365,
+      375
+    ],
+    [
+      -15,
+      5
+    ],
+    [
+      170,
+      182
+    ],
+    [
+      105,
+      115
+    ]
+  ],
+  "reference_background": [
+    19.56,
+    19.93,
+    558.96,
+    84.09
+  ]
+}

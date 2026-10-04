@@ -1,0 +1,26 @@
+[Unit]
+Description=Primeni Podpis MAX PDF signer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=devuser
+Group=devuser
+WorkingDirectory=/home/devuser/autosign
+ExecStart=/home/devuser/autosign/.venv/bin/python /home/devuser/autosign/max_bot.py --env /home/devuser/autosign/private/max.env
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/devuser/autosign/private/max-state
+Environment=PYTHONUNBUFFERED=1
+MemoryMax=512M
+TasksMax=32
+TimeoutStopSec=150
+
+[Install]
+WantedBy=multi-user.target
