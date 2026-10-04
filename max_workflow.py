@@ -27,6 +27,12 @@ def attachment_identity(attachment):
     return hashlib.sha256((token+'\0'+attachment['filename']+'\0'+str(attachment.get('size'))).encode()).hexdigest()
 
 
+def proven_not_delivered(exc):
+    # Only an explicit client-side rejection guarantees that MAX created no message.
+    # Timeouts, resets and 5xx may hide a message that was in fact published.
+    return isinstance(exc,ApiError) and 400<=exc.status<500 and exc.status!=408
+
+
 def run_signer(source, config, output):
     result=subprocess.run([sys.executable,str(Path(__file__).with_name('signer.py')),str(source),
                            '--config',str(config),'--output',str(output),'--max-pages','40'],
@@ -54,6 +60,23 @@ class Store:
             ''')
             if 'approver' not in {row[1] for row in db.execute('PRAGMA table_info(jobs)')}:
                 db.execute('ALTER TABLE jobs ADD COLUMN approver INTEGER')
+            if 'status' not in {row[1] for row in db.execute('PRAGMA table_info(deliveries)')}:
+                self.migrate_deliveries(db)
+    @staticmethod
+    def migrate_deliveries(db):
+        # Legacy rows were claimed before upload. Classify them by what the job proves.
+        # Before SENDING nothing could reach the group, so those claims are released.
+        # Anything unclear stays blocked (UNCERTAIN): never risk a duplicate publication.
+        db.execute('ALTER TABLE deliveries ADD COLUMN status TEXT')
+        db.execute('ALTER TABLE deliveries ADD COLUMN updated REAL')
+        db.execute('''UPDATE deliveries SET updated=strftime('%s','now'),status=COALESCE((
+            SELECT CASE j.state WHEN 'SENT' THEN 'CONFIRMED'
+                                WHEN 'PROCESSING' THEN 'RESERVED'
+                                WHEN 'ERROR' THEN 'RELEASE'
+                                WHEN 'CANCELLED' THEN 'RELEASE'
+                                ELSE 'UNCERTAIN' END
+            FROM jobs j WHERE j.id=deliveries.job),'UNCERTAIN')''')
+        db.execute("DELETE FROM deliveries WHERE status='RELEASE'")
     def connect(self):
         db=sqlite3.connect(self.path,timeout=15)
         db.row_factory=sqlite3.Row
@@ -72,8 +95,29 @@ class Store:
     def claim(self,jid):
         with self.connect() as db:
             return db.execute("UPDATE jobs SET state='PROCESSING' WHERE id=? AND state='WAITING'",(jid,)).rowcount==1
+    def reserve(self,chat,sha,jid):
+        # RESERVED blocks a parallel duplicate but proves nothing about delivery.
+        with self.connect() as db:
+            return db.execute("INSERT OR IGNORE INTO deliveries(chat,sha,job,status,updated) VALUES(?,?,?,'RESERVED',?)",
+                              (chat,sha,jid,time.time())).rowcount==1
+    def release(self,jid,proven=False):
+        # A plain release frees only a reservation that never reached the send step.
+        # proven=True is for an explicit 4xx rejection of the send itself.
+        with self.connect() as db:
+            db.execute("DELETE FROM deliveries WHERE job=? AND status"+("!='CONFIRMED'" if proven else "='RESERVED'"),(jid,))
+    def begin_send(self,jid):
+        # One transaction: from here on a lost reply may hide a delivered message.
+        with self.connect() as db:
+            db.execute("UPDATE deliveries SET status='UNCERTAIN',updated=? WHERE job=? AND status='RESERVED'",(time.time(),jid))
+            db.execute("UPDATE jobs SET state='SENDING',reason=NULL WHERE id=?",(jid,))
+    def confirm(self,jid,result_mid):
+        with self.connect() as db:
+            db.execute("UPDATE deliveries SET status='CONFIRMED',updated=? WHERE job=?",(time.time(),jid))
+            db.execute("UPDATE jobs SET state='SENT',reason=NULL,result_mid=? WHERE id=?",(result_mid,jid))
     def recover(self):
         with self.connect() as db:
+            # Killed before SENDING: nothing was published, free the document for a retry.
+            db.execute("DELETE FROM deliveries WHERE status='RESERVED' AND job IN (SELECT id FROM jobs WHERE state IN ('CREATED','PROCESSING'))")
             db.execute("UPDATE events SET state='ERROR',payload=NULL WHERE state='BUSY'")
             db.execute("UPDATE jobs SET state='DELIVERY_UNKNOWN',reason='Restart during external operation' WHERE state IN ('NOTIFYING','SENDING')")
             db.execute("UPDATE jobs SET state='ERROR',reason='Restart during processing' WHERE state IN ('CREATED','PROCESSING')")
@@ -229,11 +273,7 @@ class Workflow:
                 self.private('Заявка уже подписана. Повторно в общий чат её не отправляю.'); return
             added=sum(r['status']=='SIGNED' for r in rows)
             preserved=sum(r['status']=='ALREADY_SIGNED' for r in rows)
-            with self.store.connect() as db:
-                if not db.execute('INSERT OR IGNORE INTO deliveries VALUES(?,?,?)',(job['chat'],job['source_sha'],jid)).rowcount:
-                    duplicate=True
-                else: duplicate=False
-            if duplicate:
+            if not self.store.reserve(job['chat'],job['source_sha'],jid):
                 self.store.state(jid,'DUPLICATE','Document already claimed for publication')
                 self.private('Этот PDF уже обрабатывался. Повторной публикации не будет.'); return
             upload_name=Path(job['filename'].replace('\\','/')).stem+'_SIGNED.pdf'
@@ -241,28 +281,37 @@ class Workflow:
             # Recheck source immediately before publication.
             latest=self.api.message(job['mid'])
             if not self.source_matches(job,latest):
-                self.store.state(jid,'CANCELLED','Source changed before publication'); return
-            self.store.state(jid,'SENDING')
+                self.store.state(jid,'CANCELLED','Source changed before publication')
+                self.store.release(jid); return
+            self.store.begin_send(jid)
             summary=f'Проверены все страницы: {len(rows)}. Подписано: {added}. Уже подписаны и сохранены: {preserved}.'
             sent=self.api.send(chat_id=job['chat'],reply_to=job['mid'],text='Заявка подписана. '+summary,
                                attachments=[{'type':'file','payload':{'token':token}}])
-            self.store.state(jid,'SENT',result_mid=sent['message']['body']['mid'])
+            self.store.confirm(jid,sent['message']['body']['mid'])
             self.private('Готово. Подписанная заявка отправлена в рабочий чат.\n'+summary)
         except Exception as exc:
             state=self.store.job(jid)['state']
             if state=='SENT': return
-            uncertain=state=='SENDING'
+            uncertain=state=='SENDING' and not proven_not_delivered(exc)
+            if not uncertain: self.store.release(jid,proven=state=='SENDING')
             self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',type(exc).__name__)
             try: self.private('Не удалось подтвердить доставку. Проверьте рабочий чат; автоматического повтора не будет.' if uncertain else 'Обработка остановлена из-за ошибки. Заявка не опубликована.')
             except Exception: pass
         finally: self.clean(jid)
-    def clean(self,jid):
+    def clean(self,jid,keep_source=False):
         # Only generated files under this exact job directory, no recursive path traversal.
         if len(jid)!=32 or any(c not in '0123456789abcdef' for c in jid): raise ValueError('Invalid job path')
         folder=self.workdir/jid
         if not folder.exists(): return
-        for path in (folder/'request.pdf',folder/'result/request_SIGNED.pdf',folder/'result/request_SIGNED.pdf.tmp'):
-            path.unlink(missing_ok=True)
+        names=[folder/'check.pdf',folder/'result/request_SIGNED.pdf',folder/'result/request_SIGNED.pdf.tmp']
+        if not keep_source: names.append(folder/'request.pdf')
+        for path in names: path.unlink(missing_ok=True)
+    def sweep(self):
+        # After a crash or kill: remove document copies that no live job still needs.
+        # Run at startup after Store.recover(); only WAITING jobs keep their source PDF.
+        with self.store.connect() as db:
+            rows=db.execute('SELECT id,state FROM jobs').fetchall()
+        for row in rows: self.clean(row['id'],keep_source=row['state']=='WAITING')
     def expire(self):
         with self.store.connect() as db:
             expired=db.execute("SELECT id FROM jobs WHERE created<? AND state IN ('WAITING','ERROR','CANCELLED','EXPIRED','NOTIFICATION_UNKNOWN','DELIVERY_UNKNOWN')",(time.time()-86400,)).fetchall()

@@ -1,5 +1,6 @@
 import copy
 import json
+import sqlite3
 import threading
 import unittest
 import uuid
@@ -17,15 +18,21 @@ APPROVER=33162943
 class FakeAPI:
  def __init__(self,source):
   self.source=source; self.sent=[]; self.messages={}; self.answers=[]; self.uploaded=[]
-  self.fail_group=False; self.fail_private=False
+  self.fail_group=False; self.fail_private=False; self.fail_upload=None; self.group_error=None
+  self.message_hook=None; self.message_calls=0
  def send(self,**kw):
   self.sent.append(kw)
+  if kw.get('chat_id') is not None and self.group_error: raise self.group_error
   if kw.get('chat_id') is not None and self.fail_group: raise TimeoutError()
   if kw.get('user_id') is not None and self.fail_private: raise TimeoutError()
   return {'message':{'body':{'mid':'out-'+str(len(self.sent))}}}
  def download(self,url,path,limit): path.write_bytes(self.source.read_bytes())
- def message(self,mid): return copy.deepcopy(self.messages[mid])
+ def message(self,mid):
+  self.message_calls+=1
+  if self.message_hook: self.message_hook(self.message_calls)
+  return copy.deepcopy(self.messages[mid])
  def upload(self,path,filename=None):
+  if self.fail_upload: raise self.fail_upload
   self.uploaded.append((path.read_bytes(),filename)); return 'file-token'
  def answer(self,cid,text): self.answers.append((cid,text))
 
@@ -200,5 +207,93 @@ class MaxTests(unittest.TestCase):
   with self.assertRaises(TimeoutError): self.add(msg)
   self.workflow.incoming(msg)
   self.assertEqual(len(self.api.sent),1)
+
+ def delivery(self,job):
+  with self.store.connect() as db:
+   row=db.execute('SELECT status FROM deliveries WHERE job=?',(job['id'],)).fetchone()
+  return row['status'] if row else None
+ def sent_to_group(self): return len([m for m in self.api.sent if 'chat_id' in m])
+ def test_delivery_confirmed_after_send(self):
+  job=self.add(); self.workflow.handle(self.callback(job))
+  self.assertEqual(self.delivery(job),'CONFIRMED')
+ def test_upload_failure_releases_document_for_retry(self):
+  job=self.add(); self.api.fail_upload=TimeoutError()
+  self.workflow.handle(self.callback(job))
+  self.assertEqual(self.store.job(job['id'])['state'],'ERROR'); self.assertIsNone(self.delivery(job))
+  self.api.fail_upload=None
+  again=self.add(message(mid='again')); self.workflow.handle(self.callback(again))
+  self.assertEqual(self.store.job(again['id'])['state'],'SENT'); self.assertEqual(self.sent_to_group(),1)
+ def test_source_changed_before_publication_releases_claim(self):
+  job=self.add()
+  def change(call):
+   if call==2: self.api.messages[job['mid']]=message(token='changed')
+  self.api.message_hook=change
+  self.workflow.handle(self.callback(job))
+  self.assertEqual(self.store.job(job['id'])['state'],'CANCELLED')
+  self.assertIsNone(self.delivery(job)); self.assertEqual(self.sent_to_group(),0)
+  self.api.message_hook=None
+  again=self.add(message(mid='again')); self.workflow.handle(self.callback(again))
+  self.assertEqual(self.store.job(again['id'])['state'],'SENT')
+ def test_definite_send_rejection_releases_claim(self):
+  job=self.add(); self.api.group_error=ApiError('chat.denied',403)
+  self.workflow.handle(self.callback(job))
+  self.assertEqual(self.store.job(job['id'])['state'],'ERROR'); self.assertIsNone(self.delivery(job))
+  self.api.group_error=None
+  again=self.add(message(mid='again')); self.workflow.handle(self.callback(again))
+  self.assertEqual(self.store.job(again['id'])['state'],'SENT')
+ def test_ambiguous_send_failure_keeps_document_blocked(self):
+  errors=(TimeoutError(),ApiError('HTTP_ERROR',502),ApiError('HTTP_ERROR',408),ApiError('API_REJECTED'))
+  for number,error in enumerate(errors):
+   self.api.source=self.base/('doc-'+str(number)+'.pdf'); self.api.source.write_bytes(b'%PDF-1.4\n%'+str(number).encode())
+   self.api.group_error=error
+   job=self.add(message(mid='try-'+str(number),token='token-'+str(number)))
+   self.workflow.handle(self.callback(job))
+   self.assertEqual(self.store.job(job['id'])['state'],'DELIVERY_UNKNOWN',repr(error))
+   self.assertEqual(self.delivery(job),'UNCERTAIN')
+ def test_uncertain_delivery_blocks_resend_of_same_pdf(self):
+  job=self.add(); self.api.fail_group=True; self.workflow.handle(self.callback(job))
+  self.api.fail_group=False
+  again=self.add(message(mid='again')); self.workflow.handle(self.callback(again))
+  self.assertEqual(self.store.job(again['id'])['state'],'DUPLICATE'); self.assertEqual(self.sent_to_group(),1)
+ def test_restart_during_processing_releases_reservation(self):
+  job=self.add(); self.assertTrue(self.store.claim(job['id']))
+  self.assertTrue(self.store.reserve(job['chat'],job['source_sha'],job['id']))
+  self.store.recover()
+  self.assertEqual(self.store.job(job['id'])['state'],'ERROR'); self.assertIsNone(self.delivery(job))
+ def test_restart_during_sending_keeps_reservation_blocked(self):
+  job=self.add(); self.assertTrue(self.store.claim(job['id']))
+  self.store.reserve(job['chat'],job['source_sha'],job['id']); self.store.begin_send(job['id'])
+  self.store.recover()
+  self.assertEqual(self.store.job(job['id'])['state'],'DELIVERY_UNKNOWN'); self.assertEqual(self.delivery(job),'UNCERTAIN')
+ def test_legacy_deliveries_migrate_by_job_state(self):
+  path=self.base/'legacy.sqlite3'
+  with sqlite3.connect(path) as db:
+   db.executescript('''
+   CREATE TABLE jobs(id TEXT PRIMARY KEY,chat INTEGER,mid TEXT,attachment TEXT,filename TEXT,state TEXT,notification_mid TEXT,source_sha TEXT,result_mid TEXT,reason TEXT,created REAL,approver INTEGER);
+   CREATE TABLE deliveries(chat INTEGER,sha TEXT,job TEXT,PRIMARY KEY(chat,sha));''')
+   states={'SENT':'CONFIRMED','ERROR':None,'CANCELLED':None,'PROCESSING':'RESERVED','DELIVERY_UNKNOWN':'UNCERTAIN','SENDING':'UNCERTAIN'}
+   for i,state in enumerate(states):
+    db.execute('INSERT INTO jobs(id,chat,state) VALUES(?,?,?)',(state,1,state))
+    db.execute('INSERT INTO deliveries VALUES(?,?,?)',(1,'sha'+str(i),state))
+   db.execute('INSERT INTO deliveries VALUES(1,\'orphan\',\'missing-job\')')
+  Store(path); Store(path)  # second open must not migrate twice
+  with sqlite3.connect(path) as db:
+   got=dict(db.execute('SELECT job,status FROM deliveries').fetchall())
+  self.assertEqual(got,{'SENT':'CONFIRMED','PROCESSING':'RESERVED','DELIVERY_UNKNOWN':'UNCERTAIN','SENDING':'UNCERTAIN','missing-job':'UNCERTAIN'})
+ def test_clean_removes_leftover_check_pdf(self):
+  job=self.add(); folder=self.workflow.workdir/job['id']
+  (folder/'check.pdf').write_bytes(b'%PDF-leftover')
+  self.workflow.clean(job['id'])
+  self.assertFalse((folder/'check.pdf').exists()); self.assertFalse((folder/'request.pdf').exists())
+ def test_sweep_after_crash_removes_stale_copies_but_keeps_waiting_source(self):
+  waiting=self.add(); dead=self.add(message(mid='dead',token='dead-token'))
+  self.assertTrue(self.store.claim(dead['id']))
+  for job in (waiting,dead): (self.workflow.workdir/job['id']/'check.pdf').write_bytes(b'%PDF-leftover')
+  self.store.recover(); self.workflow.sweep()
+  w=self.workflow.workdir/waiting['id']; d=self.workflow.workdir/dead['id']
+  self.assertTrue((w/'request.pdf').exists()); self.assertFalse((w/'check.pdf').exists())
+  self.assertFalse((d/'request.pdf').exists()); self.assertFalse((d/'check.pdf').exists())
+  self.workflow.handle(self.callback(waiting))
+  self.assertEqual(self.store.job(waiting['id'])['state'],'SENT')
 
 if __name__=='__main__': unittest.main(verbosity=2)

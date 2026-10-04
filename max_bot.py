@@ -113,6 +113,7 @@ def main():
             names[chat]='Рабочий чат '+str(index+1)
     approvers=json.loads(os.environ.get('MAX_APPROVERS_JSON','{}'))
     workflow=Workflow(store,api,ids,approver,config,data/'jobs',chat_names=names,approvers=approvers)
+    workflow.sweep()
     stop=threading.Event()
     thread=threading.Thread(target=worker,args=(workflow,stop),daemon=True); thread.start()
     server=ThreadingHTTPServer(('127.0.0.1',int(os.environ.get('MAX_PORT','8098'))),handler_for(store,secret))
