@@ -1,6 +1,7 @@
 import copy
 import json
 import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -50,9 +51,9 @@ class MaxTests(unittest.TestCase):
   self.workflow.handle({'update_type':'message_created','message':msg})
   with self.store.connect() as db:
    return db.execute('SELECT * FROM jobs WHERE mid=?',(msg['body']['mid'],)).fetchone()
- def callback(self,job,user=APPROVER,mid=None,action='sign'):
+ def callback(self,job,user=APPROVER,mid=None,action='sign',profile=None):
   return {'update_type':'message_callback','callback':{'callback_id':uuid.uuid4().hex,
-          'user':{'user_id':user},'payload':action+':'+job['id']},
+          'user':{'user_id':user,**(profile or {})},'payload':action+':'+job['id']},
           'message':{'body':{'mid':mid or job['notification_mid']}}}
  def test_private_button_only_to_vitaliy(self):
   job=self.add()
@@ -155,6 +156,29 @@ class MaxTests(unittest.TestCase):
   self.assertEqual(self.store.job(job['id'])['state'],'REVIEW_REQUIRED')
   self.assertFalse(self.api.uploaded)
   self.assertFalse(any('chat_id' in m for m in self.api.sent))
+ def test_press_records_who_and_when(self):
+  job=self.add(); before=time.time()
+  self.workflow.handle(self.callback(job,profile={'first_name':'Иван','last_name':'Петров'}))
+  saved=self.store.job(job['id'])
+  self.assertEqual((saved['state'],saved['approver'],saved['approver_name']),('SENT',APPROVER,'Иван Петров'))
+  self.assertGreaterEqual(saved['approved_at'],before)
+  self.assertIn('Файл: Заявка.pdf\nНажал: Иван Петров (ID 33162943)',self.api.sent[-1]['text'])
+  self.workflow.handle(self.callback(job))
+  self.assertEqual(self.api.answers[-1][1],'Уже подписано: Иван Петров (ID 33162943)')
+ def test_rejection_names_who_pressed_without_profile(self):
+  self.workflow.processor=lambda source,config,output:(source,[{'page':1,'status':'REVIEW_REQUIRED','reason':'Wrong INN'}])
+  job=self.add(); self.workflow.handle(self.callback(job))
+  self.assertTrue(self.api.sent[-1]['text'].endswith('Нажал: ID 33162943'))
+  self.assertIsNone(self.workflow.pressed)
+ def test_old_database_gets_new_columns(self):
+  path=self.base/'old.sqlite3'
+  import sqlite3
+  with sqlite3.connect(path) as db:
+   db.execute('CREATE TABLE jobs(id TEXT PRIMARY KEY,chat INTEGER,mid TEXT,attachment TEXT,filename TEXT,state TEXT,notification_mid TEXT,source_sha TEXT,result_mid TEXT,reason TEXT,created REAL,approver INTEGER,UNIQUE(chat,mid,attachment))')
+  Store(path)
+  with sqlite3.connect(path) as db:
+   columns={row[1] for row in db.execute('PRAGMA table_info(jobs)')}
+  self.assertTrue({'approved_at','approver_name'}<=columns)
  def test_real_negative_not_published(self):
   self.api.source=ROOT/'private/negative.pdf'; self.workflow.processor=run_signer
   job=self.add(); self.workflow.handle(self.callback(job))
