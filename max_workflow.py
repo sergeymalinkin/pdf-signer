@@ -38,6 +38,16 @@ def run_signer(source, config, output):
     return target,rows
 
 
+def display_name(user):
+    name=' '.join(str(user.get(k) or '').strip() for k in ('first_name','last_name')).strip()
+    name=name or str(user.get('name') or '').strip() or str(user.get('username') or '').strip()
+    return name[:80] or None
+
+
+def approver_label(name,uid):
+    return f'{name} (ID {uid})' if name else f'ID {uid}'
+
+
 class Store:
     def __init__(self, path):
         self.path=Path(path)
@@ -52,8 +62,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
             CREATE TABLE IF NOT EXISTS notifications(job TEXT,user INTEGER,mid TEXT,PRIMARY KEY(job,user));
             ''')
-            if 'approver' not in {row[1] for row in db.execute('PRAGMA table_info(jobs)')}:
-                db.execute('ALTER TABLE jobs ADD COLUMN approver INTEGER')
+            columns={row[1] for row in db.execute('PRAGMA table_info(jobs)')}
+            for name,kind in (('approver','INTEGER'),('approved_at','REAL'),('approver_name','TEXT')):
+                if name not in columns: db.execute(f'ALTER TABLE jobs ADD COLUMN {name} {kind}')
     def connect(self):
         db=sqlite3.connect(self.path,timeout=15)
         db.row_factory=sqlite3.Row
@@ -89,8 +100,10 @@ class Workflow:
         if any(not users or any(type(uid)!=int or uid<=0 for uid in users) for users in self.approvers.values()):
             raise ValueError('Invalid approver configuration')
         self.private_chat=None
+        self.pressed=None
     def private(self,text,attachments=None):
         users=self.approvers.get(self.private_chat,{self.approver_id})
+        if self.pressed: text+='\n'+self.pressed
         response=None
         for uid in sorted(users):
             try: response=self.api.send(user_id=uid,text=text,attachments=attachments)
@@ -182,7 +195,9 @@ class Workflow:
         finally: check.unlink(missing_ok=True)
     def callback(self,event):
         callback=event.get('callback') or {}
-        uid=(callback.get('user') or {}).get('user_id')
+        user=callback.get('user') or {}
+        uid=user.get('user_id')
+        name=display_name(user)
         action,separator,jid=str(callback.get('payload','')).partition(':')
         if not separator or action not in ('sign','skip'): return
         job=self.store.job(jid)
@@ -196,17 +211,18 @@ class Workflow:
         if not expected_mid or (message.get('body') or {}).get('mid') != expected_mid:
             self.answer(callback,'Кнопка не относится к этой заявке.'); return
         if job['state']!='WAITING':
-            status={'SENT':'Уже подписано ответственным ID '+str(job['approver']), 'PROCESSING':'Заявка уже обрабатывается.', 'SENDING':'Заявка уже отправляется.', 'ALREADY_SIGNED':'Все страницы уже подписаны.'}.get(job['state'],'Заявка уже обработана или недоступна.')
+            status={'SENT':'Уже подписано: '+approver_label(job['approver_name'],job['approver']), 'PROCESSING':'Заявка уже обрабатывается.', 'SENDING':'Заявка уже отправляется.', 'ALREADY_SIGNED':'Все страницы уже подписаны.'}.get(job['state'],'Заявка уже обработана или недоступна.')
             self.answer(callback,status); return
         if time.time()-job['created']>86400:
             self.store.state(jid,'EXPIRED','Approval expired'); self.clean(jid)
             self.answer(callback,'Срок обработки истёк. Отправьте заявку заново.'); return
         if action=='skip':
-            self.store.state(jid,'SKIPPED','Skipped by authorized approver',approver=uid); self.clean(jid)
+            self.store.state(jid,'SKIPPED','Skipped by authorized approver',approver=uid,approved_at=time.time(),approver_name=name); self.clean(jid)
             self.answer(callback,'Заявка пропущена.'); return
         if not self.store.claim(jid): return
-        self.store.state(jid,'PROCESSING',approver=uid)
+        self.store.state(jid,'PROCESSING',approver=uid,approved_at=time.time(),approver_name=name)
         self.answer(callback,'Проверяю заявку…')
+        self.pressed='Файл: '+job['filename'][:160]+'\nНажал: '+approver_label(name,uid)
         try:
             original=self.api.message(job['mid'])
             if not self.source_matches(job,original):
@@ -255,7 +271,9 @@ class Workflow:
             self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',type(exc).__name__)
             try: self.private('Не удалось подтвердить доставку. Проверьте рабочий чат; автоматического повтора не будет.' if uncertain else 'Обработка остановлена из-за ошибки. Заявка не опубликована.')
             except Exception: pass
-        finally: self.clean(jid)
+        finally:
+            self.pressed=None
+            self.clean(jid)
     def clean(self,jid):
         # Only generated files under this exact job directory, no recursive path traversal.
         if len(jid)!=32 or any(c not in '0123456789abcdef' for c in jid): raise ValueError('Invalid job path')
