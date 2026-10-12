@@ -179,6 +179,20 @@ class MaxTests(unittest.TestCase):
   with sqlite3.connect(path) as db:
    columns={row[1] for row in db.execute('PRAGMA table_info(jobs)')}
   self.assertTrue({'approved_at','approver_name'}<=columns)
+ def test_failed_upload_does_not_block_retry(self):
+  from urllib.error import URLError
+  first=self.add()
+  with patch.object(self.api,'upload',side_effect=URLError('down')):
+   self.workflow.handle(self.callback(first))
+  self.assertEqual(self.store.job(first['id'])['state'],'ERROR')
+  self.assertEqual(self.store.job(first['id'])['reason'],'URLError')
+  with self.store.connect() as db: self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
+  second=self.add(message(mid='again')); self.workflow.handle(self.callback(second))
+  self.assertEqual(self.store.job(second['id'])['state'],'SENT')
+ def test_unknown_delivery_keeps_claim(self):
+  job=self.add(); self.api.fail_group=True; self.workflow.handle(self.callback(job))
+  self.assertEqual(self.store.job(job['id'])['state'],'DELIVERY_UNKNOWN')
+  with self.store.connect() as db: self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
  def test_real_negative_not_published(self):
   self.api.source=ROOT/'private/negative.pdf'; self.workflow.processor=run_signer
   job=self.add(); self.workflow.handle(self.callback(job))

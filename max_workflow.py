@@ -83,6 +83,9 @@ class Store:
     def claim(self,jid):
         with self.connect() as db:
             return db.execute("UPDATE jobs SET state='PROCESSING' WHERE id=? AND state='WAITING'",(jid,)).rowcount==1
+    def release(self,jid):
+        # A claim without a sent message must not block a retry of the same PDF.
+        with self.connect() as db: db.execute('DELETE FROM deliveries WHERE job=?',(jid,))
     def recover(self):
         with self.connect() as db:
             db.execute("UPDATE events SET state='ERROR',payload=NULL WHERE state='BUSY'")
@@ -257,7 +260,7 @@ class Workflow:
             # Recheck source immediately before publication.
             latest=self.api.message(job['mid'])
             if not self.source_matches(job,latest):
-                self.store.state(jid,'CANCELLED','Source changed before publication'); return
+                self.store.state(jid,'CANCELLED','Source changed before publication'); self.store.release(jid); return
             self.store.state(jid,'SENDING')
             summary=f'Проверены все страницы: {len(rows)}. Подписано: {added}. Уже подписаны и сохранены: {preserved}.'
             sent=self.api.send(chat_id=job['chat'],reply_to=job['mid'],text='Заявка подписана. '+summary,
@@ -268,6 +271,7 @@ class Workflow:
             state=self.store.job(jid)['state']
             if state=='SENT': return
             uncertain=state=='SENDING'
+            if not uncertain: self.store.release(jid)
             self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',type(exc).__name__)
             try: self.private('Не удалось подтвердить доставку. Проверьте рабочий чат; автоматического повтора не будет.' if uncertain else 'Обработка остановлена из-за ошибки. Заявка не опубликована.')
             except Exception: pass
