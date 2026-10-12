@@ -235,7 +235,11 @@ class Workflow:
         self.answer(callback,'Проверяю заявку…')
         self.pressed='Файл: '+job['filename'][:160]+'\nНажал: '+approver_label(name,uid)
         try:
-            original=self.api.message(job['mid'])
+            try: original=self.api.message(job['mid'])
+            except ApiError as exc:
+                if exc.code!='not.found': raise
+                self.store.state(jid,'CANCELLED','Source message not found')
+                self.private('Исходное сообщение с заявкой удалено или недоступно. Отправьте заявку заново.'); return
             if not self.source_matches(job,original):
                 self.store.state(jid,'CANCELLED','Source changed before approval')
                 self.private('Заявка изменена. Старое подтверждение отменено.'); return

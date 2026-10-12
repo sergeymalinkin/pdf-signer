@@ -75,7 +75,12 @@ class MaxAPI:
 
     def message(self, mid):
         from urllib.parse import quote
-        return self.request('GET','/messages/'+quote(mid,safe=''))
+        # GET is idempotent: retry transient network failures (URLError/timeouts) before giving up.
+        for attempt in range(3):
+            try: return self.request('GET','/messages/'+quote(mid,safe=''))
+            except OSError:
+                if attempt == 2: raise
+                time.sleep(2*(attempt+1))
 
     def download(self, url, path, limit):
         for _ in range(4):

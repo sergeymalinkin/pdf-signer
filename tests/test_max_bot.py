@@ -194,6 +194,31 @@ class MaxTests(unittest.TestCase):
   job=self.add(); self.api.fail_group=True; self.workflow.handle(self.callback(job))
   self.assertEqual(self.store.job(job['id'])['state'],'DELIVERY_UNKNOWN')
   with self.store.connect() as db: self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
+ def test_deleted_source_message_is_reported(self):
+  job=self.add()
+  def gone(mid): raise ApiError('not.found',404)
+  with patch.object(self.api,'message',side_effect=gone):
+   self.workflow.handle(self.callback(job))
+  saved=self.store.job(job['id'])
+  self.assertEqual((saved['state'],saved['reason']),('CANCELLED','Source message not found'))
+  self.assertIn('удалено или недоступно',self.api.sent[-1]['text'])
+  self.assertFalse(self.api.uploaded)
+ def test_message_get_retries_network_errors_only(self):
+  from urllib.error import URLError
+  from max_api import MaxAPI
+  api=MaxAPI('token')
+  calls=[]
+  def flaky(method,path,params=None,body=None):
+   calls.append(path)
+   if len(calls)<3: raise URLError('down')
+   return {'ok':True}
+  with patch.object(api,'request',side_effect=flaky),patch('max_api.time.sleep'):
+   self.assertEqual(api.message('m1'),{'ok':True})
+  self.assertEqual(len(calls),3)
+  calls.clear()
+  with patch.object(api,'request',side_effect=ApiError('not.found',404)) as req,patch('max_api.time.sleep'):
+   with self.assertRaises(ApiError): api.message('m1')
+  self.assertEqual(req.call_count,1)
  def test_real_negative_not_published(self):
   self.api.source=ROOT/'private/negative.pdf'; self.workflow.processor=run_signer
   job=self.add(); self.workflow.handle(self.callback(job))
