@@ -185,7 +185,8 @@ class MaxTests(unittest.TestCase):
   with patch.object(self.api,'upload',side_effect=URLError('down')):
    self.workflow.handle(self.callback(first))
   self.assertEqual(self.store.job(first['id'])['state'],'ERROR')
-  self.assertEqual(self.store.job(first['id'])['reason'],'URLError')
+  reason=self.store.job(first['id'])['reason']
+  self.assertTrue(reason.startswith('URLError: ') and ' @' in reason,reason)
   with self.store.connect() as db: self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
   second=self.add(message(mid='again')); self.workflow.handle(self.callback(second))
   self.assertEqual(self.store.job(second['id'])['state'],'SENT')

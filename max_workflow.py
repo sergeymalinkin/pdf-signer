@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -36,6 +37,13 @@ def run_signer(source, config, output):
     rows=json.loads(target.with_suffix('.json').read_text(encoding='utf-8'))['pages']
     if not rows: raise RuntimeError('No pages were processed')
     return target,rows
+
+
+def failure_detail(exc):
+    # Exception type, short message and the last frame in our own code; no URLs, tokens or document data.
+    frames=[f for f in traceback.extract_tb(exc.__traceback__) if Path(f.filename).name in ('max_api.py','max_workflow.py','signer.py')]
+    where=f'{frames[-1].name}:{frames[-1].lineno}' if frames else '?'
+    return f"{type(exc).__name__}: {' '.join(str(exc).split())[:120]} @{where}"
 
 
 def display_name(user):
@@ -272,7 +280,9 @@ class Workflow:
             if state=='SENT': return
             uncertain=state=='SENDING'
             if not uncertain: self.store.release(jid)
-            self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',type(exc).__name__)
+            detail=failure_detail(exc)
+            print('Job failed',jid[:8],detail,flush=True)
+            self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',detail)
             try: self.private('Не удалось подтвердить доставку. Проверьте рабочий чат; автоматического повтора не будет.' if uncertain else 'Обработка остановлена из-за ошибки. Заявка не опубликована.')
             except Exception: pass
         finally:
