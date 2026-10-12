@@ -40,9 +40,9 @@ def run_signer(source, config, output):
 
 
 def failure_detail(exc):
-    # Exception type, short message and the last frame in our own code; no URLs, tokens or document data.
+    # Exception type, short message and the last three frames in our own code; no URLs, tokens or document data.
     frames=[f for f in traceback.extract_tb(exc.__traceback__) if Path(f.filename).name in ('max_api.py','max_workflow.py','signer.py')]
-    where=f'{frames[-1].name}:{frames[-1].lineno}' if frames else '?'
+    where=' < '.join(f'{f.name}:{f.lineno}' for f in frames[-3:][::-1]) or '?'
     return f"{type(exc).__name__}: {' '.join(str(exc).split())[:120]} @{where}"
 
 
