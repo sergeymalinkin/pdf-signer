@@ -234,8 +234,10 @@ class Workflow:
         self.store.state(jid,'PROCESSING',approver=uid,approved_at=time.time(),approver_name=name)
         self.answer(callback,'Проверяю заявку…')
         self.pressed='Файл: '+job['filename'][:160]+'\nНажал: '+approver_label(name,uid)
+        t0=time.monotonic(); marks=[]
+        def mark(stage): marks.append(f'{stage}={time.monotonic()-t0:.1f}')
         try:
-            try: original=self.api.message(job['mid'])
+            try: original=self.api.message(job['mid']); mark('check')
             except ApiError as exc:
                 if exc.code!='not.found': raise
                 self.store.state(jid,'CANCELLED','Source message not found')
@@ -245,7 +247,7 @@ class Workflow:
                 self.private('Заявка изменена. Старое подтверждение отменено.'); return
             source=self.workdir/jid/'request.pdf'
             if hashlib.sha256(source.read_bytes()).hexdigest()!=job['source_sha']: raise RuntimeError('Source integrity check failed')
-            output,rows=self.processor(source,self.config,self.workdir/jid/'result')
+            output,rows=self.processor(source,self.config,self.workdir/jid/'result'); mark('sign')
             if any(r['status'] not in ('SIGNED','ALREADY_SIGNED') for r in rows):
                 self.store.state(jid,'REVIEW_REQUIRED','One or more pages rejected')
                 explanations={
@@ -268,16 +270,17 @@ class Workflow:
                 self.store.state(jid,'DUPLICATE','Document already claimed for publication')
                 self.private('Этот PDF уже обрабатывался. Повторной публикации не будет.'); return
             upload_name=Path(job['filename'].replace('\\','/')).stem+'_SIGNED.pdf'
-            token=self.api.upload(output,filename=upload_name)
+            token=self.api.upload(output,filename=upload_name); mark('upload')
             # Recheck source immediately before publication.
-            latest=self.api.message(job['mid'])
+            latest=self.api.message(job['mid']); mark('recheck')
             if not self.source_matches(job,latest):
                 self.store.state(jid,'CANCELLED','Source changed before publication'); self.store.release(jid); return
             self.store.state(jid,'SENDING')
             summary=f'Проверены все страницы: {len(rows)}. Подписано: {added}. Уже подписаны и сохранены: {preserved}.'
             sent=self.api.send(chat_id=job['chat'],reply_to=job['mid'],text='Заявка подписана. '+summary,
                                attachments=[{'type':'file','payload':{'token':token}}])
-            self.store.state(jid,'SENT',result_mid=sent['message']['body']['mid'])
+            self.store.state(jid,'SENT',result_mid=sent['message']['body']['mid']); mark('send')
+            print('Job timing',jid[:8],' '.join(marks),flush=True)
             self.private('Готово. Подписанная заявка отправлена в рабочий чат.\n'+summary)
         except Exception as exc:
             state=self.store.job(jid)['state']
@@ -285,7 +288,7 @@ class Workflow:
             uncertain=state=='SENDING'
             if not uncertain: self.store.release(jid)
             detail=failure_detail(exc)
-            print('Job failed',jid[:8],detail,flush=True)
+            print('Job failed',jid[:8],detail,'after',' '.join(marks) or 'start',f'total={time.monotonic()-t0:.1f}',flush=True)
             self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',detail)
             try: self.private('Не удалось подтвердить доставку. Проверьте рабочий чат; автоматического повтора не будет.' if uncertain else 'Обработка остановлена из-за ошибки. Заявка не опубликована.')
             except Exception: pass
