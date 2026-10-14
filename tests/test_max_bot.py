@@ -95,6 +95,11 @@ class MaxTests(unittest.TestCase):
  def test_private_id_command(self):
   self.workflow.handle({'update_type':'message_created','message':{'sender':{'user_id':987},'recipient':{'chat_type':'dialog'},'body':{'text':'/id'}}})
   self.assertEqual(self.api.sent[0]['text'],'Ваш MAX ID: 987')
+ def test_private_message_from_approver_confirms_access(self):
+  approver=next(iter(self.workflow.approvers[CHATS[0]]))
+  msg=lambda uid:{'update_type':'message_created','message':{'sender':{'user_id':uid},'recipient':{'chat_type':'dialog'},'body':{'text':'привет'}}}
+  self.workflow.handle(msg(approver)); self.workflow.handle(msg(987))
+  self.assertEqual(len(self.api.sent),1); self.assertIn('подключены',self.api.sent[0]['text'])
  def test_unauthorized_press_does_not_sign(self):
   job=self.add(); self.workflow.handle(self.callback(job,user=55))
   self.assertEqual(self.process_calls,0); self.assertEqual(self.store.job(job['id'])['state'],'WAITING')

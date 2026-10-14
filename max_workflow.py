@@ -132,6 +132,10 @@ class Workflow:
         elif kind=='message_created' and (event.get('message') or {}).get('recipient',{}).get('chat_type')=='dialog' and str((event.get('message') or {}).get('body',{}).get('text','')).strip()=='/id':
             uid=(event['message'].get('sender') or {}).get('user_id')
             if isinstance(uid,int): self.api.send(user_id=uid,text=f'Ваш MAX ID: {uid}')
+        elif kind=='message_created' and (event.get('message') or {}).get('recipient',{}).get('chat_type')=='dialog':
+            uid=(event['message'].get('sender') or {}).get('user_id')
+            if isinstance(uid,int) and uid in set().union(*self.approvers.values()):
+                self.api.send(user_id=uid,text='Вы подключены как ответственный. Заявки из доступных рабочих чатов будут приходить сюда с кнопкой «Подписать».')
         elif kind=='bot_added' and event.get('chat_id') in self.chat_ids:
             chat=event['chat_id']
             self.chat_names[chat]=self.api.request('GET',f'/chats/{chat}').get('title',self.chat_names[chat])
