@@ -48,6 +48,13 @@ def approver_label(name,uid):
     return f'{name} (ID {uid})' if name else f'ID {uid}'
 
 
+class ClosingConnection(sqlite3.Connection):
+    """with-блок sqlite3 только фиксирует транзакцию; здесь он ещё и закрывает соединение."""
+    def __exit__(self,*exc):
+        try: return super().__exit__(*exc)
+        finally: self.close()
+
+
 class Store:
     def __init__(self, path):
         self.path=Path(path)
@@ -66,7 +73,7 @@ class Store:
             for name,kind in (('approver','INTEGER'),('approved_at','REAL'),('approver_name','TEXT')):
                 if name not in columns: db.execute(f'ALTER TABLE jobs ADD COLUMN {name} {kind}')
     def connect(self):
-        db=sqlite3.connect(self.path,timeout=15)
+        db=sqlite3.connect(self.path,timeout=15,factory=ClosingConnection)
         db.row_factory=sqlite3.Row
         return db
     def enqueue(self,event):
