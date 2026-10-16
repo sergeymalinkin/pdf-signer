@@ -95,6 +95,11 @@ class MaxTests(unittest.TestCase):
  def test_private_id_command(self):
   self.workflow.handle({'update_type':'message_created','message':{'sender':{'user_id':987},'recipient':{'chat_type':'dialog'},'body':{'text':'/id'}}})
   self.assertEqual(self.api.sent[0]['text'],'Ваш MAX ID: 987')
+ def test_private_message_from_approver_confirms_access(self):
+  approver=next(iter(self.workflow.approvers[CHATS[0]]))
+  msg=lambda uid:{'update_type':'message_created','message':{'sender':{'user_id':uid},'recipient':{'chat_type':'dialog'},'body':{'text':'привет'}}}
+  self.workflow.handle(msg(approver)); self.workflow.handle(msg(987))
+  self.assertEqual(len(self.api.sent),1); self.assertIn('подключены',self.api.sent[0]['text'])
  def test_unauthorized_press_does_not_sign(self):
   job=self.add(); self.workflow.handle(self.callback(job,user=55))
   self.assertEqual(self.process_calls,0); self.assertEqual(self.store.job(job['id'])['state'],'WAITING')
@@ -179,6 +184,46 @@ class MaxTests(unittest.TestCase):
   with sqlite3.connect(path) as db:
    columns={row[1] for row in db.execute('PRAGMA table_info(jobs)')}
   self.assertTrue({'approved_at','approver_name'}<=columns)
+ def test_failed_upload_does_not_block_retry(self):
+  from urllib.error import URLError
+  first=self.add()
+  with patch.object(self.api,'upload',side_effect=URLError('down')):
+   self.workflow.handle(self.callback(first))
+  self.assertEqual(self.store.job(first['id'])['state'],'ERROR')
+  reason=self.store.job(first['id'])['reason']
+  self.assertTrue(reason.startswith('URLError: ') and ' @' in reason,reason)
+  with self.store.connect() as db: self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0],0)
+  second=self.add(message(mid='again')); self.workflow.handle(self.callback(second))
+  self.assertEqual(self.store.job(second['id'])['state'],'SENT')
+ def test_unknown_delivery_keeps_claim(self):
+  job=self.add(); self.api.fail_group=True; self.workflow.handle(self.callback(job))
+  self.assertEqual(self.store.job(job['id'])['state'],'DELIVERY_UNKNOWN')
+  with self.store.connect() as db: self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0],1)
+ def test_deleted_source_message_is_reported(self):
+  job=self.add()
+  def gone(mid): raise ApiError('not.found',404)
+  with patch.object(self.api,'message',side_effect=gone):
+   self.workflow.handle(self.callback(job))
+  saved=self.store.job(job['id'])
+  self.assertEqual((saved['state'],saved['reason']),('CANCELLED','Source message not found'))
+  self.assertIn('удалено или недоступно',self.api.sent[-1]['text'])
+  self.assertFalse(self.api.uploaded)
+ def test_message_get_retries_network_errors_only(self):
+  from urllib.error import URLError
+  from max_api import MaxAPI
+  api=MaxAPI('token')
+  calls=[]
+  def flaky(method,path,params=None,body=None):
+   calls.append(path)
+   if len(calls)<3: raise URLError('down')
+   return {'ok':True}
+  with patch.object(api,'request',side_effect=flaky),patch('max_api.time.sleep'):
+   self.assertEqual(api.message('m1'),{'ok':True})
+  self.assertEqual(len(calls),3)
+  calls.clear()
+  with patch.object(api,'request',side_effect=ApiError('not.found',404)) as req,patch('max_api.time.sleep'):
+   with self.assertRaises(ApiError): api.message('m1')
+  self.assertEqual(req.call_count,1)
  def test_real_negative_not_published(self):
   self.api.source=ROOT/'private/negative.pdf'; self.workflow.processor=run_signer
   job=self.add(); self.workflow.handle(self.callback(job))

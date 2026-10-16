@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -36,6 +37,13 @@ def run_signer(source, config, output):
     rows=json.loads(target.with_suffix('.json').read_text(encoding='utf-8'))['pages']
     if not rows: raise RuntimeError('No pages were processed')
     return target,rows
+
+
+def failure_detail(exc):
+    # Exception type, short message and the last three frames in our own code; no URLs, tokens or document data.
+    frames=[f for f in traceback.extract_tb(exc.__traceback__) if Path(f.filename).name in ('max_api.py','max_workflow.py','signer.py')]
+    where=' < '.join(f'{f.name}:{f.lineno}' for f in frames[-3:][::-1]) or '?'
+    return f"{type(exc).__name__}: {' '.join(str(exc).split())[:120]} @{where}"
 
 
 def display_name(user):
@@ -90,6 +98,9 @@ class Store:
     def claim(self,jid):
         with self.connect() as db:
             return db.execute("UPDATE jobs SET state='PROCESSING' WHERE id=? AND state='WAITING'",(jid,)).rowcount==1
+    def release(self,jid):
+        # A claim without a sent message must not block a retry of the same PDF.
+        with self.connect() as db: db.execute('DELETE FROM deliveries WHERE job=?',(jid,))
     def recover(self):
         with self.connect() as db:
             db.execute("UPDATE events SET state='ERROR',payload=NULL WHERE state='BUSY'")
@@ -128,6 +139,10 @@ class Workflow:
         elif kind=='message_created' and (event.get('message') or {}).get('recipient',{}).get('chat_type')=='dialog' and str((event.get('message') or {}).get('body',{}).get('text','')).strip()=='/id':
             uid=(event['message'].get('sender') or {}).get('user_id')
             if isinstance(uid,int): self.api.send(user_id=uid,text=f'Ваш MAX ID: {uid}')
+        elif kind=='message_created' and (event.get('message') or {}).get('recipient',{}).get('chat_type')=='dialog':
+            uid=(event['message'].get('sender') or {}).get('user_id')
+            if isinstance(uid,int) and uid in set().union(*self.approvers.values()):
+                self.api.send(user_id=uid,text='Вы подключены как ответственный. Заявки из доступных рабочих чатов будут приходить сюда с кнопкой «Подписать».')
         elif kind=='bot_added' and event.get('chat_id') in self.chat_ids:
             chat=event['chat_id']
             self.chat_names[chat]=self.api.request('GET',f'/chats/{chat}').get('title',self.chat_names[chat])
@@ -230,14 +245,20 @@ class Workflow:
         self.store.state(jid,'PROCESSING',approver=uid,approved_at=time.time(),approver_name=name)
         self.answer(callback,'Проверяю заявку…')
         self.pressed='Файл: '+job['filename'][:160]+'\nНажал: '+approver_label(name,uid)
+        t0=time.monotonic(); marks=[]
+        def mark(stage): marks.append(f'{stage}={time.monotonic()-t0:.1f}')
         try:
-            original=self.api.message(job['mid'])
+            try: original=self.api.message(job['mid']); mark('check')
+            except ApiError as exc:
+                if exc.code!='not.found': raise
+                self.store.state(jid,'CANCELLED','Source message not found')
+                self.private('Исходное сообщение с заявкой удалено или недоступно. Отправьте заявку заново.'); return
             if not self.source_matches(job,original):
                 self.store.state(jid,'CANCELLED','Source changed before approval')
                 self.private('Заявка изменена. Старое подтверждение отменено.'); return
             source=self.workdir/jid/'request.pdf'
             if hashlib.sha256(source.read_bytes()).hexdigest()!=job['source_sha']: raise RuntimeError('Source integrity check failed')
-            output,rows=self.processor(source,self.config,self.workdir/jid/'result')
+            output,rows=self.processor(source,self.config,self.workdir/jid/'result'); mark('sign')
             if any(r['status'] not in ('SIGNED','ALREADY_SIGNED') for r in rows):
                 self.store.state(jid,'REVIEW_REQUIRED','One or more pages rejected')
                 explanations={
@@ -260,22 +281,26 @@ class Workflow:
                 self.store.state(jid,'DUPLICATE','Document already claimed for publication')
                 self.private('Этот PDF уже обрабатывался. Повторной публикации не будет.'); return
             upload_name=Path(job['filename'].replace('\\','/')).stem+'_SIGNED.pdf'
-            token=self.api.upload(output,filename=upload_name)
+            token=self.api.upload(output,filename=upload_name); mark('upload')
             # Recheck source immediately before publication.
-            latest=self.api.message(job['mid'])
+            latest=self.api.message(job['mid']); mark('recheck')
             if not self.source_matches(job,latest):
-                self.store.state(jid,'CANCELLED','Source changed before publication'); return
+                self.store.state(jid,'CANCELLED','Source changed before publication'); self.store.release(jid); return
             self.store.state(jid,'SENDING')
             summary=f'Проверены все страницы: {len(rows)}. Подписано: {added}. Уже подписаны и сохранены: {preserved}.'
             sent=self.api.send(chat_id=job['chat'],reply_to=job['mid'],text='Заявка подписана. '+summary,
                                attachments=[{'type':'file','payload':{'token':token}}])
-            self.store.state(jid,'SENT',result_mid=sent['message']['body']['mid'])
+            self.store.state(jid,'SENT',result_mid=sent['message']['body']['mid']); mark('send')
+            print('Job timing',jid[:8],' '.join(marks),flush=True)
             self.private('Готово. Подписанная заявка отправлена в рабочий чат.\n'+summary)
         except Exception as exc:
             state=self.store.job(jid)['state']
             if state=='SENT': return
             uncertain=state=='SENDING'
-            self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',type(exc).__name__)
+            if not uncertain: self.store.release(jid)
+            detail=failure_detail(exc)
+            print('Job failed',jid[:8],detail,'after',' '.join(marks) or 'start',f'total={time.monotonic()-t0:.1f}',flush=True)
+            self.store.state(jid,'DELIVERY_UNKNOWN' if uncertain else 'ERROR',detail)
             try: self.private('Не удалось подтвердить доставку. Проверьте рабочий чат; автоматического повтора не будет.' if uncertain else 'Обработка остановлена из-за ошибки. Заявка не опубликована.')
             except Exception: pass
         finally:
