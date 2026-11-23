@@ -89,12 +89,22 @@ class MaxAPI:
                 with self.opener.open(Request(url),timeout=40) as response:
                     if int(response.headers.get('Content-Length','0')) > limit: raise ValueError('PDF exceeds size limit')
                     total=0
-                    with path.open('xb') as output:
-                        while chunk := response.read(65536):
-                            total += len(chunk)
-                            if total > limit: raise ValueError('PDF exceeds size limit')
-                            output.write(chunk)
-                    if path.read_bytes()[:5] != b'%PDF-': raise ValueError('Not a PDF')
+                    created=False
+                    try:
+                        with path.open('xb') as output:
+                            created=True
+                            header=b''
+                            while chunk := response.read(65536):
+                                total += len(chunk)
+                                if total > limit: raise ValueError('PDF exceeds size limit')
+                                if len(header) < 5: header=(header+chunk)[:5]
+                                output.write(chunk)
+                            if header != b'%PDF-': raise ValueError('Not a PDF')
+                    except Exception:
+                        # Only remove the file exclusively created by this attempt.
+                        # A pre-existing destination belongs to somebody else.
+                        if created: path.unlink(missing_ok=True)
+                        raise
                     return
             except HTTPError as exc:
                 if exc.code not in (301,302,303,307,308): raise ApiError('MEDIA_DOWNLOAD_FAILED',exc.code) from None
